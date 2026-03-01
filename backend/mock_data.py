@@ -221,6 +221,15 @@ def _skor_ve_risk(kural: Rule, rng: random.Random) -> tuple[float, str]:
 # Aşama 1 — Ham ÇKS Verisi (DenizBank PostgreSQL şeması)
 # ---------------------------------------------------------------------------
 
+def _rastgele_telefon(rng: random.Random) -> str:
+    """053X XXX XX XX formatında gerçekçi cep numarası üretir."""
+    x = rng.choice([2, 3, 4, 5, 6, 7, 8, 9])
+    a = rng.randint(100, 999)
+    b = rng.randint(10, 99)
+    c = rng.randint(10, 99)
+    return f"053{x} {a} {b} {c}"
+
+
 def generate_raw_cks_data() -> pd.DataFrame:
     """
     DenizBank gerçek ÇKS tablosunu taklit eden ham veri üretir.
@@ -232,6 +241,7 @@ def generate_raw_cks_data() -> pd.DataFrame:
         Ilce          : İlçe adı
         Urun1_Adi     : Birincil ürün adı
         Urun1_Alan    : Parsel alanı (hektar, float)
+        Telefon       : 053X XXX XX XX formatında cep numarası
     """
     rng = random.Random()
     rows: list[dict] = []
@@ -246,6 +256,7 @@ def generate_raw_cks_data() -> pd.DataFrame:
             "Ilce":         rng.choice(bolge.ilceler),
             "Urun1_Adi":    rng.choice(bolge.tipik_urunler),
             "Urun1_Alan":   round(rng.uniform(1.5, 28.0), 1),
+            "Telefon":      _rastgele_telefon(rng),
         })
 
     return pd.DataFrame(rows)
@@ -332,6 +343,34 @@ def generate_mock_data() -> pd.DataFrame:
     """
     raw = generate_raw_cks_data()
     return process_cks_data(raw)
+
+
+# ---------------------------------------------------------------------------
+# Tek başvuru — arayüzden gelen gerçek veriyi anlık AI analizinden geçirir
+# ---------------------------------------------------------------------------
+
+def process_single_application(data: dict) -> dict:
+    """
+    Bankacının arayüzden girdiği tek bir başvuruyu alır, process_cks_data
+    mantığıyla (ML veya manuel DSS) Risk_Durumu, Tesvik_Skoru, Onerilen_Urun
+    üretir. Dönen dict hem gelen alanları hem de bu üç alanı içerir.
+
+    Beklenen giriş: TCKN, ad_soyad, Il, Urun1_Adi, Urun1_Alan (Ilce opsiyonel)
+    """
+    ilce = data.get("Ilce") or "Merkez"
+    raw = pd.DataFrame([
+        {
+            "TCKN":         str(data["TCKN"]).strip(),
+            "Il":           str(data["Il"]).strip(),
+            "Ilce":         ilce,
+            "Urun1_Adi":    str(data["Urun1_Adi"]).strip(),
+            "Urun1_Alan":   float(data["Urun1_Alan"]),
+        }
+    ])
+    enriched = process_cks_data(raw)
+    row = enriched.iloc[0].to_dict()
+    row["ad_soyad"] = data.get("ad_soyad", "").strip()
+    return row
 
 
 # ---------------------------------------------------------------------------

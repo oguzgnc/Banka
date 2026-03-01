@@ -8,12 +8,14 @@ import {
   Search,
   Wheat,
   CircleUserRound,
+  Sparkles,
 } from 'lucide-react';
 
 const navItems = [
   { to: '/', label: 'Gösterge Paneli', icon: LayoutDashboard, end: true },
   { to: '/cks-analizleri', label: 'ÇKS Analizleri', icon: FileSearch, end: false },
   { to: '/risk-haritasi', label: 'Risk Haritası', icon: MapPin, end: false },
+  { to: '/ai-firsatlari', label: 'Yapay Zeka Fırsatları', icon: Sparkles, end: false },
   { to: '/kredi-basvurulari', label: 'Kredi Başvuruları', icon: CreditCard, end: false },
 ];
 
