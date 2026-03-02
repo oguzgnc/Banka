@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
 import {
   FileSearch,
   Download,
@@ -59,6 +61,17 @@ interface Farmer {
   Tesvik_Skoru: number;
   Risk_Durumu?: string;
   Durum:        string;
+}
+
+interface MarketTrend {
+  id: number;
+  urun_adi: string;
+  etki_puani: number;
+  aciklama: string;
+}
+
+function normalizeUrun(value: string): string {
+  return value.trim().toLocaleLowerCase('tr-TR');
 }
 
 /**
@@ -168,9 +181,11 @@ export default function CKSAnalyses() {
   const [formLoading, setFormLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; visible: boolean }>({ message: '', visible: false });
   const [selectedFarmer, setSelectedFarmer] = useState<Farmer | null>(null);
+  const [marketTrends, setMarketTrends] = useState<MarketTrend[]>([]);
   const [form, setForm] = useState(formInitial);
   const [bulkUploading, setBulkUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
 
   // 2. fetchData (diğer callback'lerden önce tanımlanmalı)
   const fetchData = useCallback(async () => {
@@ -189,6 +204,20 @@ export default function CKSAnalyses() {
 
   // 3. fetchData'yı çağıran useEffect (hemen sonra)
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  const fetchMarketTrends = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/market-trends`);
+      if (!res.ok) return;
+      setMarketTrends(await res.json() as MarketTrend[]);
+    } catch {
+      // Piyasa etkisi özeti opsiyonel; hata durumunda ana ekran akışı devam etsin.
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchMarketTrends();
+  }, [fetchMarketTrends]);
 
   // 4. Yardımcı callback'ler (fetchData artık tanımlı)
   const showToast = useCallback((message: string) => {
@@ -313,6 +342,61 @@ export default function CKSAnalyses() {
         },
       ]
     : [];
+
+  const marketTrendMap = useMemo(() => {
+    const out: Record<string, MarketTrend> = {};
+    for (const trend of marketTrends) {
+      out[normalizeUrun(trend.urun_adi)] = trend;
+    }
+    return out;
+  }, [marketTrends]);
+
+  const selectedTrend = selectedFarmer
+    ? marketTrendMap[normalizeUrun(selectedFarmer.Urun1_Adi)]
+    : undefined;
+
+  const handleDownloadPDF = useCallback(async () => {
+    if (!selectedFarmer) return;
+    const element = modalRef.current;
+    if (!element) {
+      showToast('PDF oluşturulamadı: modal içeriği bulunamadı.');
+      return;
+    }
+
+    try {
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+      });
+
+      const imgData = canvas.toDataURL('image/jpeg', 0.8);
+      const pdf = new jsPDF('p', 'mm', 'a4');
+
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+      const margin = 10;
+      const usableWidth = pdfWidth - margin * 2;
+      const imgHeight = (canvas.height * usableWidth) / canvas.width;
+
+      let heightLeft = imgHeight;
+      let position = margin;
+
+      pdf.addImage(imgData, 'JPEG', margin, position, usableWidth, imgHeight);
+      heightLeft -= (pdfHeight - margin * 2);
+
+      while (heightLeft > 0) {
+        pdf.addPage();
+        position = margin - (imgHeight - heightLeft);
+        pdf.addImage(imgData, 'JPEG', margin, position, usableWidth, imgHeight);
+        heightLeft -= (pdfHeight - margin * 2);
+      }
+
+      pdf.save(`Kredi_Raporu_${selectedFarmer.TCKN}.pdf`);
+    } catch {
+      showToast('PDF oluşturulurken bir hata oluştu.');
+    }
+  }, [selectedFarmer, showToast]);
 
   return (
     <div className="space-y-8">
@@ -461,7 +545,7 @@ export default function CKSAnalyses() {
             onClick={() => setSelectedFarmer(null)}
             aria-hidden
           />
-          <div className="relative z-10 w-full max-w-2xl bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+          <div ref={modalRef} className="relative z-10 w-full max-w-2xl bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
             {/* Header */}
             <div className="px-6 py-5 border-b border-slate-200 bg-slate-50/80 flex items-start justify-between gap-4">
               <div>
@@ -538,6 +622,12 @@ export default function CKSAnalyses() {
                   <Brain size={18} className="flex-shrink-0 mt-0.5 text-slate-500" />
                   <div>
                     <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Yapay Zeka Karar Özeti</p>
+                    {selectedTrend && selectedTrend.aciklama?.trim() && selectedTrend.etki_puani !== 0 && (
+                      <p className="text-sm leading-relaxed mb-2">
+                        <strong>[Piyasa Etkisi: {selectedTrend.etki_puani > 0 ? `+${selectedTrend.etki_puani.toFixed(1)}` : selectedTrend.etki_puani.toFixed(1)}]</strong>{' '}
+                        {selectedTrend.aciklama}
+                      </p>
+                    )}
                     <p className="text-sm leading-relaxed">{generateAIReasoning(selectedFarmer)}</p>
                   </div>
                 </div>
@@ -545,7 +635,16 @@ export default function CKSAnalyses() {
             </div>
 
             {/* Alt: Aksiyon butonları */}
-            <div className="px-6 py-4 border-t border-slate-200 bg-slate-50/50 flex flex-wrap gap-3 justify-end">
+            <div className="px-6 py-4 border-t border-slate-200 bg-slate-50/50 flex flex-wrap gap-3 justify-between items-center">
+              <button
+                type="button"
+                onClick={handleDownloadPDF}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+              >
+                <Download className="w-4 h-4" />
+                PDF İndir
+              </button>
+              <div className="flex flex-wrap gap-3 justify-end">
               <button
                 type="button"
                 onClick={() => handleStatusUpdate(selectedFarmer.TCKN, 'Reddedildi')}
@@ -567,6 +666,7 @@ export default function CKSAnalyses() {
               >
                 Krediyi Onayla
               </button>
+              </div>
             </div>
           </div>
         </div>

@@ -6,48 +6,62 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Legend,
 } from 'recharts';
+import { useMemo } from 'react';
 
-export interface CropTrendEntry {
-  year: string;
-  Mısır: number;
-  Buğday: number;
-  Arpa: number;
-  Ayçiçeği: number;
-  Pamuk: number;
+interface FarmerCropRecord {
+  Urun1_Adi: string;
+  Urun1_Alan: number;
 }
 
 interface Props {
-  data: CropTrendEntry[];
+  data: FarmerCropRecord[];
 }
 
-const COLORS: Record<keyof Omit<CropTrendEntry, 'year'>, string> = {
-  Mısır: '#16a34a',
-  Buğday: '#f59e0b',
-  Arpa: '#3b82f6',
-  Ayçiçeği: '#f97316',
-  Pamuk: '#8b5cf6',
-};
-
-const CROPS = Object.keys(COLORS) as (keyof typeof COLORS)[];
-
-const formatTooltip = (value: number | undefined) =>
-  value !== undefined ? `${value.toLocaleString('tr-TR')} ton` : '';
+interface ChartRow {
+  urun: string;
+  toplamAlan: number;
+  ciftciSayisi: number;
+}
 
 export default function CropTrendsChart({ data }: Props) {
+  const chartData = useMemo<ChartRow[]>(() => {
+    const byCrop = new Map<string, { toplamAlan: number; ciftciSayisi: number }>();
+
+    for (const row of data) {
+      const crop = row.Urun1_Adi?.trim();
+      if (!crop) continue;
+
+      const alan = Number(row.Urun1_Alan);
+      const current = byCrop.get(crop) ?? { toplamAlan: 0, ciftciSayisi: 0 };
+      byCrop.set(crop, {
+        toplamAlan: current.toplamAlan + (Number.isFinite(alan) ? alan : 0),
+        ciftciSayisi: current.ciftciSayisi + 1,
+      });
+    }
+
+    return Array.from(byCrop.entries())
+      .map(([urun, values]) => ({
+        urun,
+        toplamAlan: Number(values.toplamAlan.toFixed(2)),
+        ciftciSayisi: values.ciftciSayisi,
+      }))
+      .sort((a, b) => b.toplamAlan - a.toplamAlan)
+      .slice(0, 10);
+  }, [data]);
+
   return (
     <div className="bg-white shadow-sm border border-slate-200 rounded-lg p-6 flex flex-col h-full">
       <div className="mb-4">
         <h2 className="text-base font-semibold text-slate-800">Ürün Ekim Trendleri</h2>
-        <p className="text-xs text-slate-500 mt-0.5">Yıllara göre üretim miktarı (bin ton)</p>
+        <p className="text-xs text-slate-500 mt-0.5">Gerçek başvurulardan ürün bazlı toplam ekim alanı (ha)</p>
       </div>
 
       <ResponsiveContainer width="100%" height={300}>
-        <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }} barSize={10}>
+        <BarChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }} barSize={18}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
           <XAxis
-            dataKey="year"
+            dataKey="urun"
             tick={{ fontSize: 12, fill: '#94a3b8' }}
             axisLine={false}
             tickLine={false}
@@ -56,10 +70,13 @@ export default function CropTrendsChart({ data }: Props) {
             tick={{ fontSize: 11, fill: '#94a3b8' }}
             axisLine={false}
             tickLine={false}
-            tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`}
+            tickFormatter={(v) => `${v}`}
           />
           <Tooltip
-            formatter={formatTooltip}
+            formatter={(value: number, _name: string, payload: { payload?: ChartRow }) => {
+              const ciftciSayisi = payload?.payload?.ciftciSayisi ?? 0;
+              return [`${value.toLocaleString('tr-TR')} ha`, `Toplam Alan (${ciftciSayisi} çiftçi)`];
+            }}
             contentStyle={{
               borderRadius: '8px',
               border: '1px solid #e2e8f0',
@@ -67,14 +84,7 @@ export default function CropTrendsChart({ data }: Props) {
               fontSize: '12px',
             }}
           />
-          <Legend
-            wrapperStyle={{ fontSize: '12px', paddingTop: '8px' }}
-            iconType="circle"
-            iconSize={8}
-          />
-          {CROPS.map((crop) => (
-            <Bar key={crop} dataKey={crop} fill={COLORS[crop]} radius={[3, 3, 0, 0]} />
-          ))}
+          <Bar dataKey="toplamAlan" fill="#16a34a" radius={[6, 6, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
     </div>

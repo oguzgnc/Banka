@@ -1,16 +1,23 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Users, FileText, AlertTriangle, RefreshCw, WifiOff } from 'lucide-react';
 import KPICard from '../components/KPICard';
-import TurkeyMap, { type MapRegion } from '../components/TurkeyMap';
-import CropTrendsChart, { type CropTrendEntry } from '../components/CropTrendsChart';
-import RecommendationsTable, { type Recommendation } from '../components/RecommendationsTable';
+import TurkeyMap from '../components/TurkeyMap';
+import CropTrendsChart from '../components/CropTrendsChart';
+import RecommendationsTable from '../components/RecommendationsTable';
 
 const API_BASE = 'http://127.0.0.1:8000';
 
-interface KpiData {
-  toplam_ciftci: number;
-  bekleyen_kredi: number;
-  yuksek_riskli_bolge: number;
+interface Farmer {
+  id?: number;
+  TCKN: string;
+  ad_soyad: string;
+  Il: string;
+  Urun1_Adi: string;
+  Urun1_Alan: number;
+  Onerilen_Urun?: string;
+  Tesvik_Skoru: number;
+  Risk_Durumu?: string;
+  Durum: string;
 }
 
 function SkeletonCard() {
@@ -86,10 +93,7 @@ function SkeletonTable() {
 }
 
 export default function Dashboard() {
-  const [kpi, setKpi] = useState<KpiData | null>(null);
-  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
-  const [cropTrends, setCropTrends] = useState<CropTrendEntry[]>([]);
-  const [mapData, setMapData] = useState<MapRegion[]>([]);
+  const [data, setData] = useState<Farmer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -97,22 +101,11 @@ export default function Dashboard() {
     setLoading(true);
     setError(null);
     try {
-      // Tek istekte tutarlı snapshot: tüm veriler aynı DataFrame'den türetilir
-      const res = await fetch(`${API_BASE}/api/snapshot`);
+      const res = await fetch(`${API_BASE}/api/cks-analyses`);
 
       if (!res.ok) throw new Error('Sunucu beklenmedik bir hata döndürdü.');
 
-      const snapshot = await res.json() as {
-        kpi: KpiData;
-        recommendations: Recommendation[];
-        map_data: MapRegion[];
-        crop_trends: CropTrendEntry[];
-      };
-
-      setKpi(snapshot.kpi);
-      setRecommendations(snapshot.recommendations);
-      setMapData(snapshot.map_data);
-      setCropTrends(snapshot.crop_trends);
+      setData(await res.json() as Farmer[]);
     } catch {
       setError('Backend\'e bağlanılamadı. Lütfen API sunucusunun çalıştığını kontrol edin.');
     } finally {
@@ -124,11 +117,14 @@ export default function Dashboard() {
     fetchData();
   }, [fetchData]);
 
-  const kpiCards = kpi
-    ? [
+  const toplamCiftci = data.length;
+  const bekleyenKredi = data.filter((d) => d.Durum === 'İncelemede').length;
+  const yuksekRiskli = data.filter((d) => d.Durum === 'Riskli' || d.Durum === 'Reddedildi').length;
+
+  const kpiCards = [
         {
           title: 'Toplam Çiftçi Sayısı',
-          value: kpi.toplam_ciftci.toLocaleString('tr-TR'),
+          value: toplamCiftci.toLocaleString('tr-TR'),
           change: 12,
           changeLabel: 'geçen aya göre',
           icon: Users,
@@ -137,7 +133,7 @@ export default function Dashboard() {
         },
         {
           title: 'Bekleyen Kredi Başvurusu',
-          value: kpi.bekleyen_kredi.toLocaleString('tr-TR'),
+          value: bekleyenKredi.toLocaleString('tr-TR'),
           change: -8,
           changeLabel: 'geçen aya göre',
           icon: FileText,
@@ -145,16 +141,15 @@ export default function Dashboard() {
           iconBg: 'bg-blue-100',
         },
         {
-          title: 'Yüksek Riskli Bölge',
-          value: kpi.yuksek_riskli_bolge.toLocaleString('tr-TR'),
+          title: 'Yüksek Riskli Başvuru',
+          value: yuksekRiskli.toLocaleString('tr-TR'),
           change: -5,
           changeLabel: 'geçen aya göre',
           icon: AlertTriangle,
           iconColor: 'text-orange-700',
           iconBg: 'bg-orange-100',
         },
-      ]
-    : [];
+      ];
 
   return (
     <div className="space-y-8">
@@ -205,12 +200,12 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <div style={{ minHeight: '400px' }} className="flex">
           <div className="flex-1">
-            {loading ? <SkeletonMap /> : <TurkeyMap data={mapData} />}
+            {loading ? <SkeletonMap /> : <TurkeyMap data={data} />}
           </div>
         </div>
         <div style={{ minHeight: '400px' }} className="flex">
           <div className="flex-1">
-            {loading ? <SkeletonChart /> : <CropTrendsChart data={cropTrends} />}
+            {loading ? <SkeletonChart /> : <CropTrendsChart data={data} />}
           </div>
         </div>
       </div>
@@ -219,7 +214,7 @@ export default function Dashboard() {
       {loading ? (
         <SkeletonTable />
       ) : (
-        <RecommendationsTable data={recommendations} />
+        <RecommendationsTable data={data} />
       )}
     </div>
   );

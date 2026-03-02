@@ -18,10 +18,26 @@ from mock_data import (
 
 app = FastAPI(title="Tarımsal Kredi API")
 
+_MARKET_SEED_PRODUCTS = ["Mısır", "Buğday", "Ayçiçeği", "Pamuk", "Şeker Pancarı"]
+
+
+def _seed_market_trends_if_empty() -> None:
+    db = SessionLocal()
+    try:
+        exists = db.query(models.MarketTrend.id).first()
+        if exists:
+            return
+        for urun in _MARKET_SEED_PRODUCTS:
+            db.add(models.MarketTrend(urun_adi=urun, etki_puani=0.0, aciklama=""))
+        db.commit()
+    finally:
+        db.close()
+
 # Uygulama başlarken tabloları oluştur
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
+    _seed_market_trends_if_empty()
 
 
 def get_db():
@@ -35,6 +51,11 @@ def get_db():
 
 class StatusUpdate(BaseModel):
     durum: str
+
+
+class MarketTrendUpdate(BaseModel):
+    etki_puani: float
+    aciklama: str = ""
 
 
 app.add_middleware(
@@ -108,6 +129,35 @@ def _skor_to_durum(score: int) -> str:
     return "Riskli"
 
 
+def _score_to_risk_and_status(score_0_10: float) -> tuple[str, str]:
+    if score_0_10 >= 8.0:
+        return "Düşük", "Onaylı"
+    if score_0_10 >= 6.0:
+        return "Orta", "İncelemede"
+    return "Yüksek", "Riskli"
+
+
+def _apply_market_trend_effect(enriched: dict, db: Session) -> dict:
+    urun = str(enriched.get("Urun1_Adi", "")).strip()
+    base_score = float(enriched.get("Tesvik_Skoru", 0) or 0)
+
+    trend = (
+        db.query(models.MarketTrend)
+        .filter(models.MarketTrend.urun_adi == urun)
+        .first()
+    )
+    etki_puani = float(trend.etki_puani or 0) if trend else 0.0
+
+    final_score = max(0.0, min(10.0, round(base_score + etki_puani, 2)))
+    risk_durumu, durum = _score_to_risk_and_status(final_score)
+
+    out = dict(enriched)
+    out["Tesvik_Skoru"] = final_score
+    out["Risk_Durumu"] = risk_durumu
+    out["Durum"] = durum
+    return out
+
+
 @app.get("/api/cks-analyses")
 def get_cks_analyses(db: Session = Depends(get_db)):
     """ÇKS analiz listesi: sadece veritabanındaki gerçek kayıtlar (JSON-serializable dict listesi)."""
@@ -123,10 +173,46 @@ def get_cks_analyses(db: Session = Depends(get_db)):
             "Onerilen_Urun": row.Onerilen_Urun,
             "Tesvik_Skoru": row.Tesvik_Skoru,
             "Risk_Durumu": row.Risk_Durumu,
+            "Tarih": row.Tarih,
             "Durum": row.Durum
         }
         for row in db_records
     ]
+
+
+@app.get("/api/market-trends")
+def get_market_trends(db: Session = Depends(get_db)):
+    rows = db.query(models.MarketTrend).order_by(models.MarketTrend.urun_adi.asc()).all()
+    return [
+        {
+            "id": row.id,
+            "urun_adi": row.urun_adi,
+            "etki_puani": float(row.etki_puani or 0),
+            "aciklama": str(row.aciklama or ""),
+        }
+        for row in rows
+    ]
+
+
+@app.put("/api/market-trends/{trend_id}")
+def update_market_trend(trend_id: int, body: MarketTrendUpdate, db: Session = Depends(get_db)):
+    if body.etki_puani < -2.0 or body.etki_puani > 2.0:
+        raise HTTPException(status_code=400, detail="etki_puani -2.0 ile +2.0 arasında olmalıdır.")
+
+    row = db.query(models.MarketTrend).filter(models.MarketTrend.id == trend_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Trend kaydı bulunamadı.")
+
+    row.etki_puani = float(body.etki_puani)
+    row.aciklama = str(body.aciklama or "").strip()
+    db.commit()
+    db.refresh(row)
+    return {
+        "id": row.id,
+        "urun_adi": row.urun_adi,
+        "etki_puani": float(row.etki_puani or 0),
+        "aciklama": str(row.aciklama or ""),
+    }
 
 
 @app.get("/api/risk-map")
@@ -143,42 +229,42 @@ def get_credit_applications():
 # ---------------------------------------------------------------------------
 # Yapay Zeka Fırsatları — en düşük riskli, yüksek skorlu çiftçiler
 # ---------------------------------------------------------------------------
-
-_AI_ISIMLER = [
-    "Mehmet Yılmaz", "Ayşe Kaya", "Ali Demir", "Fatma Çelik", "Hasan Öztürk",
-    "Emine Arslan", "Mustafa Şahin", "Zeynep Güneş", "İbrahim Koç", "Hatice Aydın",
-]
-
-_AI_NEDENLER = [
-    "Bölgesel risk minimum seviyede ve önerilen ürüne geçiş yüksek karlılık vaat ediyor.",
-    "Düşük temerrüt olasılığı; bölge–ürün uyumu model tarafından onaylandı.",
-    "Yüksek teşvik skoru; kredi geri dönüşü güçlü görünüyor.",
-    "AI analizi: Bu il–ürün kombinasyonu tarihsel verilerde düşük batırma oranına sahip.",
-    "Önerilen ürün değişimi hem su tasarrufu hem de gelir artışı potansiyeli taşıyor.",
-    "Bölge koşullarına uyumlu üretim profili; risk skoru en düşük dilimde.",
-]
-
-
 @app.get("/api/ai-opportunities")
-def get_ai_opportunities():
+def get_ai_opportunities(db: Session = Depends(get_db)):
     """
-    Risk_Durumu 'Düşük' ve Tesvik_Skoru > 8.0 olan en iyi 6–8 çiftçiyi döner.
-    Her fırsata ad_soyad ve ai_neden eklenir.
+    Tamamen gerçek veritabanından fırsat listesi üretir.
+    Kural: Tesvik_Skoru >= 7.0 veya Durum != 'Reddedildi'.
     """
-    import random
-    df = generate_mock_data()
-    mask = (df["Risk_Durumu"] == "Düşük") & (df["Tesvik_Skoru"] > 8.0)
-    best = df[mask].sort_values("Tesvik_Skoru", ascending=False).head(8)
-    rng = random.Random()
-    isimler = rng.sample(_AI_ISIMLER, min(len(best), len(_AI_ISIMLER)))
-    nedenler = _AI_NEDENLER.copy()
-    rng.shuffle(nedenler)
+    rows = (
+        db.query(models.FarmerApplication)
+        .order_by(models.FarmerApplication.Tesvik_Skoru.desc(), models.FarmerApplication.id.desc())
+        .all()
+    )
+
     opportunities = []
-    for i, (_, row) in enumerate(best.iterrows()):
-        rec = row.to_dict()
-        rec["ad_soyad"] = isimler[i % len(isimler)]
-        rec["ai_neden"] = nedenler[i % len(nedenler)]
-        opportunities.append(rec)
+    for row in rows:
+        skor = float(row.Tesvik_Skoru or 0)
+        durum = str(row.Durum or "")
+        if not (skor >= 7.0 or durum != "Reddedildi"):
+            continue
+
+        onerilen_urun = str(row.Onerilen_Urun or row.Urun1_Adi)
+        opportunities.append(
+            {
+                "TCKN": row.TCKN,
+                "ad_soyad": row.ad_soyad,
+                "Il": row.Il,
+                "Ilce": "Merkez",
+                "Urun1_Adi": row.Urun1_Adi,
+                "Urun1_Alan": float(row.Urun1_Alan or 0),
+                "Onerilen_Urun": onerilen_urun,
+                "Tesvik_Skoru": skor,
+                "Risk_Durumu": row.Risk_Durumu,
+                "Telefon": "Sistemde Kayıtlı",
+                "ai_neden": f"{row.Il} bölgesindeki toprak yapısı ve pazar talebi {onerilen_urun} üretimi için oldukça elverişli. Bu müşteriye özel teşvik paketi sunulabilir.",
+            }
+        )
+
     return {"opportunities": opportunities}
 
 
@@ -198,6 +284,7 @@ def post_application(body: dict, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail=f"Eksik alan: {key}")
 
     enriched = process_single_application(body)
+    enriched = _apply_market_trend_effect(enriched, db)
 
     # Aynı TCKN varsa güncelleme veya hata — unique olduğu için yeni kayıt ekliyoruz
     existing = db.query(models.FarmerApplication).filter(models.FarmerApplication.TCKN == enriched["TCKN"]).first()
@@ -213,7 +300,7 @@ def post_application(body: dict, db: Session = Depends(get_db)):
         Onerilen_Urun=str(enriched.get("Onerilen_Urun", "")),
         Tesvik_Skoru=float(enriched.get("Tesvik_Skoru", 0)),
         Risk_Durumu=str(enriched.get("Risk_Durumu", "")),
-        Durum="İncelemede",
+        Durum=str(enriched.get("Durum", "İncelemede")),
     )
     db.add(record)
     db.commit()
@@ -311,6 +398,7 @@ def bulk_upload_applications(file: UploadFile = File(...), db: Session = Depends
                 continue
             body = {"TCKN": tckn, "ad_soyad": ad_soyad, "Il": il, "Urun1_Adi": urun, "Urun1_Alan": alan_f}
             enriched = process_single_application(body)
+            enriched = _apply_market_trend_effect(enriched, db)
             if db.query(models.FarmerApplication).filter(models.FarmerApplication.TCKN == tckn).first():
                 continue
             record = models.FarmerApplication(
@@ -322,7 +410,7 @@ def bulk_upload_applications(file: UploadFile = File(...), db: Session = Depends
                 Onerilen_Urun=str(enriched.get("Onerilen_Urun", "")),
                 Tesvik_Skoru=float(enriched.get("Tesvik_Skoru", 0)),
                 Risk_Durumu=str(enriched.get("Risk_Durumu", "")),
-                Durum="İncelemede",
+                Durum=str(enriched.get("Durum", "İncelemede")),
             )
             db.add(record)
             added += 1

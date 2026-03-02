@@ -25,3 +25,12 @@ class FarmerApplication(Base):
     Risk_Durumu = Column(String(50), nullable=True)
     Tarih = Column(String(10), default=_bugun_str, nullable=False)
     Durum = Column(String(50), default="İncelemede", nullable=False)
+
+
+class MarketTrend(Base):
+    __tablename__ = "market_trends"
+
+    id = Column(Integer, primary_key=True, index=True)
+    urun_adi = Column(String(100), unique=True, nullable=False, index=True)
+    etki_puani = Column(Float, nullable=False, default=0.0)
+    aciklama = Column(String(500), nullable=True, default="")

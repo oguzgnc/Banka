@@ -8,12 +8,26 @@ const API_BASE = 'http://127.0.0.1:8000';
  * PostgreSQL prod bağlantısında tek satır değişmez.
  */
 
-type AppStatus = 'Onaylandı' | 'Bekliyor' | 'Reddedildi';
+type AppStatus = 'Onaylandı' | 'İncelemede' | 'Reddedildi';
 
 interface AppSummary {
   onaylanan:  number;
   bekleyen:   number;
   reddedilen: number;
+}
+
+interface Farmer {
+  id?: number;
+  TCKN: string;
+  ad_soyad: string;
+  Il: string;
+  Urun1_Adi: string;
+  Urun1_Alan: number;
+  Onerilen_Urun?: string;
+  Tesvik_Skoru: number;
+  Risk_Durumu?: string;
+  Tarih?: string;
+  Durum: string;
 }
 
 interface Application {
@@ -27,21 +41,39 @@ interface Application {
   Durum:      AppStatus;
 }
 
-interface CreditData {
-  summary:      AppSummary;
-  applications:  Application[];
-}
-
 // ── Sabit konfigürasyonlar ──────────────────────────────────────────────────
 
 const STATUS_CONFIG: Record<AppStatus, { badge: string; icon: React.ReactNode }> = {
   Onaylandı:  { badge: 'bg-green-100 text-green-800',  icon: <CheckCircle size={13} className="text-green-600" /> },
-  Bekliyor:   { badge: 'bg-yellow-100 text-yellow-800', icon: <Clock       size={13} className="text-yellow-600" /> },
+  İncelemede: { badge: 'bg-yellow-100 text-yellow-800', icon: <Clock       size={13} className="text-yellow-600" /> },
   Reddedildi: { badge: 'bg-red-100 text-red-800',      icon: <XCircle     size={13} className="text-red-600" /> },
 };
 
 function formatTutar(tutar: number): string {
-  return `₺${tutar.toLocaleString('tr-TR').replace(',', '.')}`;
+  return tutar.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY', maximumFractionDigits: 0 });
+}
+
+function formatDate(value?: string): string {
+  if (!value) {
+    return new Date().toLocaleDateString('tr-TR');
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleDateString('tr-TR');
+}
+
+function toAppStatus(durum: string): AppStatus {
+  if (durum === 'Onaylandı' || durum === 'Onaylı') return 'Onaylandı';
+  if (durum === 'Reddedildi' || durum === 'Riskli') return 'Reddedildi';
+  return 'İncelemede';
+}
+
+function krediTuruFromUrun(urun: string): string {
+  const name = urun?.trim();
+  if (!name) return 'Tarımsal Üretim';
+  return `${name} Üretim Kredisi`;
 }
 
 // ── Skeleton bileşenleri ────────────────────────────────────────────────────
@@ -86,7 +118,7 @@ function SkeletonTable() {
 // ── Ana bileşen ─────────────────────────────────────────────────────────────
 
 export default function CreditApplications() {
-  const [data, setData]       = useState<CreditData | null>(null);
+  const [farmers, setFarmers] = useState<Farmer[]>([]);
   const [loading, setLoading]  = useState(true);
   const [error, setError]      = useState<string | null>(null);
   const [search, setSearch]    = useState('');
@@ -95,9 +127,9 @@ export default function CreditApplications() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/credit-applications`);
+      const res = await fetch(`${API_BASE}/api/cks-analyses`);
       if (!res.ok) throw new Error('Sunucu beklenmedik bir hata döndürdü.');
-      setData(await res.json() as CreditData);
+      setFarmers(await res.json() as Farmer[]);
     } catch {
       setError('Backend\'e bağlanılamadı. Lütfen API sunucusunun çalıştığını kontrol edin.');
     } finally {
@@ -107,7 +139,22 @@ export default function CreditApplications() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  const filtered = (data?.applications ?? []).filter((a) =>
+  const applications: Application[] = farmers.map((farmer, index) => {
+    const id = farmer.id ?? index + 1;
+    const tutar = Number(farmer.Urun1_Alan) * 50000;
+    return {
+      Basvuru_No: `BA-2026-${id.toString().padStart(4, '0')}`,
+      TCKN: farmer.TCKN,
+      Ad_Soyad: farmer.ad_soyad,
+      Il: farmer.Il,
+      Kredi_Turu: krediTuruFromUrun(farmer.Urun1_Adi),
+      Tutar: Number.isFinite(tutar) ? tutar : 0,
+      Tarih: formatDate(farmer.Tarih),
+      Durum: toAppStatus(farmer.Durum),
+    };
+  });
+
+  const filtered = applications.filter((a) =>
     search === '' ||
     a.Basvuru_No.toLowerCase().includes(search.toLowerCase()) ||
     a.TCKN.includes(search) ||
@@ -115,19 +162,24 @@ export default function CreditApplications() {
     a.Il.toLowerCase().includes(search.toLowerCase())
   );
 
-  const statCards = data
-    ? [
+  const summary: AppSummary = {
+    onaylanan: farmers.filter((d) => d.Durum === 'Onaylı' || d.Durum === 'Onaylandı').length,
+    bekleyen: farmers.filter((d) => d.Durum === 'İncelemede').length,
+    reddedilen: farmers.filter((d) => d.Durum === 'Reddedildi' || d.Durum === 'Riskli').length,
+  };
+
+  const statCards = [
         {
           label:  'Onaylanan',
-          value:  data.summary.onaylanan,
+          value:  summary.onaylanan,
           color:  'text-green-700',
           bg:     'bg-green-50',
           border: 'border-green-200',
           icon:   <CheckCircle size={20} className="text-green-600" />,
         },
         {
-          label:  'Bekliyor',
-          value:  data.summary.bekleyen,
+          label:  'Bekleyen',
+          value:  summary.bekleyen,
           color:  'text-yellow-700',
           bg:     'bg-yellow-50',
           border: 'border-yellow-200',
@@ -135,14 +187,13 @@ export default function CreditApplications() {
         },
         {
           label:  'Reddedilen',
-          value:  data.summary.reddedilen,
+          value:  summary.reddedilen,
           color:  'text-red-700',
           bg:     'bg-red-50',
           border: 'border-red-200',
           icon:   <XCircle size={20} className="text-red-600" />,
         },
-      ]
-    : [];
+      ];
 
   return (
     <div className="space-y-8">

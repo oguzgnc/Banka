@@ -9,6 +9,7 @@ import {
   Wheat,
   CircleUserRound,
   Sparkles,
+  TrendingUp,
 } from 'lucide-react';
 
 const navItems = [
@@ -17,6 +18,7 @@ const navItems = [
   { to: '/risk-haritasi', label: 'Risk Haritası', icon: MapPin, end: false },
   { to: '/ai-firsatlari', label: 'Yapay Zeka Fırsatları', icon: Sparkles, end: false },
   { to: '/kredi-basvurulari', label: 'Kredi Başvuruları', icon: CreditCard, end: false },
+  { to: '/piyasa-ayarlari', label: 'Piyasa Ayarları', icon: TrendingUp, end: false },
 ];
 
 export default function Layout() {
